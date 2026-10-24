@@ -1,0 +1,13 @@
+{
+  "recorded_utc": "2026-10-23",
+  "host": "111.228.44.125",
+  "policy": "Use running server sources as baseline; preserve English/core SSO source and processes.",
+  "source_sha256": {
+    "/opt/chess-sso-bridge/current/chess_bridge.py": "122e33bae1b89c32fbb42dd60c0432537e5abc1a44e8b898a0df50bb7481c717",
+    "/opt/mealie/deploy/lazylady_sso_bridge/app.py": "77282087812220ae18b2f65e198cc59c14f08b0d5d8dcd6808298bd41c4fc391",
+    "/opt/baby-profile/sso-service/main.py": "3da8b6436507dfd7c84d281c8892a296aae5c3f3f74c87affbd418a4c25e07d0",
+    "/opt/baby-profile/sso-service/english_entry.py": "b6fe0b3cba85e28fd57f761ab7e14ce2dac02ddf990e6e6a414fe24c1d762573",
+    "/opt/baby-profile/sso-service/english_sso_extension.py": "03ddce732f129870d74a06c49627f8b2b4d160713170a1427ea603e1016b9221",
+    "/etc/nginx/sites-enabled/baby-profile.conf": "923d5c49c843d27cfb212c29d37b4ee87a18231cdbfbb379c933e2c035f8a81c"
+  }
+}

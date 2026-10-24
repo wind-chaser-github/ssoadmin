@@ -1,0 +1,27 @@
+[Unit]
+Description=Daily user quota sidecar (core SSO and English unchanged)
+After=network.target baby-sso.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/baby-profile/sso-service
+Environment=PYTHONPATH=/opt/baby-profile/sso-service
+Environment=QUOTA_DB_PATH=/opt/baby-profile/sso-service/sso.db
+ExecStart=/opt/baby-profile/sso-service/venv/bin/python -m uvicorn quota_service:create_app --factory --app-dir /opt/sso-quota/current --host 127.0.0.1 --port 5191 --no-access-log
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/baby-profile/sso-service
+ReadOnlyPaths=/opt/baby-profile/sso-service/main.py /opt/baby-profile/sso-service/database.py /opt/baby-profile/sso-service/english_sso_extension.py /opt/baby-profile/sso-service/english_entry.py /opt/baby-profile/sso-service/venv
+MemoryMax=192M
+CPUQuota=50%
+LimitNOFILE=2048
+
+[Install]
+WantedBy=multi-user.target
