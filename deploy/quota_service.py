@@ -17,6 +17,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
+if __package__:
+    from .english_names import EnglishNames
+else:
+    from english_names import EnglishNames
 
 
 DEFAULTS = {
@@ -26,16 +30,18 @@ DEFAULTS = {
     "little-story-press": 5,
     "chess-atelier": 50,
     "eat": 5,
+    "seth-english": 5,
 }
-GENERIC_APPS = frozenset(DEFAULTS) - {"chess-atelier", "eat"}
+GENERIC_APPS = frozenset(DEFAULTS) - {"chess-atelier", "eat", "seth-english"}
 ENGLISH_APP = "seth-english"
 ADMIN_ORIGINS = {"https://admin.lazylady.cc", "https://lazylady.cc"}
 MAX_QUOTA = 100000
 
 
 class QuotaStore:
-    def __init__(self, path, clock=time.time):
+    def __init__(self, path, clock=time.time, names=None):
         self.path, self.clock = str(path), clock
+        self.names = names or (lambda: {})
 
     def initialize(self):
         with closing(sqlite3.connect(self.path, timeout=2)) as db, db:
@@ -55,6 +61,12 @@ class QuotaStore:
                     previous_value INTEGER,
                     new_value INTEGER,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS admin_user_labels (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id),
+                    label TEXT NOT NULL,
+                    actor_id INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
             """)
 
@@ -92,8 +104,6 @@ class QuotaStore:
 
     @staticmethod
     def managed(app_id):
-        if app_id == ENGLISH_APP:
-            raise HTTPException(409, "小C英语保留现有额度逻辑，暂不纳入本次管理。")
         if app_id not in DEFAULTS:
             raise HTTPException(404, "该应用尚未接入额度管理。")
 
@@ -177,6 +187,23 @@ class QuotaStore:
             balance = min(balance + sum(r[0] == day for r in expired), max(0, limit - used))
             # Report spendable credits, including the independent trusted cap.
             self._write_balance(db, user_id, app_id, balance, day)
+        elif app_id == ENGLISH_APP:
+            # Match the English reserve/commit/refund contract under the same
+            # SQLite writer lock. Yesterday's reservations never refill today.
+            expired = db.execute(
+                "SELECT reset_date FROM english_quota_ledger WHERE central_user_id=? "
+                "AND app_id=? AND state='reserved' AND expires_at<=?",
+                (user_id, app_id, instant.timestamp()),
+            ).fetchall()
+            db.execute(
+                "UPDATE english_quota_ledger SET state='refunded',closed_at=? "
+                "WHERE central_user_id=? AND app_id=? AND state='reserved' AND expires_at<=?",
+                (int(instant.timestamp()), user_id, app_id, instant.timestamp()),
+            )
+            refund = sum(r[0] == day for r in expired)
+            if refund:
+                balance += refund
+                self._write_balance(db, user_id, app_id, balance, day)
         elif app_id == "eat":
             expired = db.execute(
                 "SELECT charged_date FROM eat_bridge_reservations "
@@ -219,6 +246,7 @@ class QuotaStore:
     def users(self, claims):
         with self.transaction() as (db, instant):
             self.actor(db, claims, instant, admin=True)
+            names = self.names()
             result = []
             for user in db.execute("SELECT id,username,role,is_admin,created_at FROM users ORDER BY id"):
                 apps = []
@@ -227,12 +255,28 @@ class QuotaStore:
                     (user["id"],),
                 ).fetchall():
                     app_id = row["app_id"]
-                    # English is intentionally read-only, including stale-day rows.
                     balance = (self.normalize(db, user["id"], app_id, instant)
                                if app_id in DEFAULTS else row["ai_credits_balance"])
                     apps.append(self.describe(db, user["id"], app_id, balance))
-                result.append({**dict(user), "is_admin": bool(user["is_admin"]), "apps": apps})
+                label = db.execute("SELECT label FROM admin_user_labels WHERE user_id=?", (user["id"],)).fetchone()
+                result.append({**dict(user), "is_admin": bool(user["is_admin"]), "apps": apps,
+                               "admin_label": label[0] if label else "",
+                               "learner_names": names.get(user["id"], [])})
             return result
+
+    def label(self, claims, user_id, label):
+        if not isinstance(label, str) or len(label.strip()) > 48 or any(ord(c) < 32 or ord(c) == 127 for c in label):
+            raise HTTPException(422, "备注须为不超过48字的单行文字。")
+        with self.transaction() as (db, instant):
+            actor_id = self.actor(db, claims, instant, admin=True)
+            if not db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone():
+                raise HTTPException(404, "用户不存在。")
+            db.execute(
+                "INSERT INTO admin_user_labels(user_id,label,actor_id,updated_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET label=excluded.label,actor_id=excluded.actor_id,updated_at=excluded.updated_at",
+                (user_id, label.strip(), actor_id, instant.isoformat()),
+            )
+        return {"status": "success", "admin_label": label.strip()}
 
     def update(self, claims, user_id, app_id, action, value):
         self.managed(app_id)
@@ -321,9 +365,14 @@ class ConsumeRequest(BaseModel):
     cost: int = Field(default=1, strict=True, ge=0, le=MAX_QUOTA)
 
 
+class LabelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(strict=True, max_length=48)
+
+
 def create_app(central=None, store=None):
     central = central if central is not None else importlib.import_module("main")
-    store = store or QuotaStore(os.environ.get("QUOTA_DB_PATH", "/opt/baby-profile/sso-service/sso.db"))
+    store = store or QuotaStore(os.environ.get("QUOTA_DB_PATH", "/opt/baby-profile/sso-service/sso.db"), names=EnglishNames())
     store.initialize()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
@@ -367,11 +416,15 @@ def create_app(central=None, store=None):
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "managed_apps": sorted(DEFAULTS), "english_unchanged": True}
+        return {"status": "ok", "managed_apps": sorted(DEFAULTS), "english_managed": True}
 
     @app.get("/admin/quotas/users")
     def users(value: dict = Depends(admin_claims)):
         return store.users(value)
+
+    @app.post("/admin/quotas/users/{user_id}/label")
+    def label(user_id: int, payload: LabelRequest, value: dict = Depends(admin_claims)):
+        return store.label(value, user_id, payload.label)
 
     @app.post("/admin/quotas/users/{user_id}/apps/{app_id}/daily")
     def daily(user_id: int, app_id: str, payload: DailyRequest, value: dict = Depends(admin_claims)):

@@ -20,7 +20,30 @@ type QuotaUser = {
   is_admin: boolean;
   created_at: string;
   apps: AppQuota[];
+  admin_label: string;
+  learner_names: string[];
 };
+
+const userName = (user: QuotaUser) => user.admin_label || user.learner_names?.join('、') || (user.username.startsWith('wx_') ? `微信用户 #${user.id}` : user.username);
+
+function UserLabel({ user, disabled, onSave }: { user: QuotaUser; disabled: boolean; onSave: (user: QuotaUser, label: string) => Promise<void> }) {
+  const [label, setLabel] = useState(user.admin_label || '');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  return <details className="text-sm text-neutral-400">
+    <summary className="cursor-pointer">编辑管理备注</summary>
+    <form className="mt-3 flex flex-wrap gap-2" onSubmit={async event => {
+      event.preventDefault(); if (busy || disabled) return;
+      setBusy(true); setError('');
+      try { await onSave(user, label); } catch (failure) { setError(errorMessage(failure)); }
+      finally { setBusy(false); }
+    }}>
+      <input aria-label={`账号${user.id}的管理备注`} maxLength={48} value={label} onChange={event => setLabel(event.target.value)} disabled={busy || disabled} placeholder="例如：小明妈妈（仅管理员可见）" className="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-2 text-white" />
+      <button disabled={busy || disabled} className="rounded-lg border border-neutral-700 px-3 py-2 disabled:opacity-40">{busy ? '保存中…' : '保存备注'}</button>
+      {error && <p role="alert" className="w-full text-red-300">{error}</p>}
+    </form>
+  </details>;
+}
 
 type QuotaEdit = { user: QuotaUser; app: AppQuota; kind: 'daily' | 'remaining' };
 
@@ -85,7 +108,7 @@ function QuotaEditor({ edit, onClose, onSave }: {
       <form onSubmit={handleSubmit} className="space-y-5 p-6">
         <div>
           <h2 id="quota-editor-title" className="text-xl font-bold text-white">{daily ? '修改每日额度' : '设置今日剩余'}</h2>
-          <p className="mt-2 break-all text-sm text-neutral-400">{edit.user.username} · {edit.app.app_id}</p>
+          <p className="mt-2 break-all text-sm text-neutral-400">{userName(edit.user)} · 账号 #{edit.user.id} · {edit.app.app_id}</p>
         </div>
         <p id="quota-editor-description" className="rounded-lg border border-indigo-500/20 bg-indigo-500/10 p-3 text-sm leading-6 text-indigo-200">
           {daily
@@ -136,6 +159,7 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
   const [loadError, setLoadError] = useState('');
   const [notice, setNotice] = useState('');
   const [editor, setEditor] = useState<QuotaEdit | null>(null);
+  const [query, setQuery] = useState('');
   const requestId = useRef(0);
   const mutationPending = useRef(false);
 
@@ -181,6 +205,17 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
   };
 
   const editDisabled = loading || saving || Boolean(loadError);
+  const saveLabel = async (user: QuotaUser, label: string) => {
+    if (mutationPending.current) throw new Error('正在保存，请稍候。');
+    mutationPending.current = true; setSaving(true); setNotice('');
+    try {
+      await api.post(`/admin/quotas/users/${user.id}/label`, { label });
+      await loadUsers();
+      setNotice('管理备注已保存。备注仅供管理员识别账号，不修改用户登录名。');
+    } finally { mutationPending.current = false; setSaving(false); }
+  };
+  const needle = query.trim().toLocaleLowerCase();
+  const visibleUsers = users.filter(user => [String(user.id), `#${user.id}`, user.username, user.admin_label, ...(user.learner_names || [])].join(' ').toLocaleLowerCase().includes(needle));
   const editButtonClass = 'rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 transition-colors hover:border-indigo-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40';
 
   return (
@@ -200,20 +235,32 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
         </div>
       )}
       {loading && users.length === 0 && <p role="status" className="text-sm text-neutral-400">正在读取用户和额度…</p>}
+      <div className="space-y-2">
+        <label htmlFor="user-search" className="block text-sm text-neutral-300">查找用户</label>
+        <input id="user-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="输入孩子昵称、管理备注、账号编号或登录名" className="w-full rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-3 text-white" />
+        <p className="text-xs text-neutral-500">显示 {visibleUsers.length} / {users.length} 个账号。昵称来自英语孩子档案；同名用户请核对账号编号，额度按登录账号分别计算。</p>
+      </div>
       {!loading && !loadError && users.length === 0 && <p className="rounded-xl border border-neutral-800 p-6 text-neutral-400">暂无用户。</p>}
+      {!loading && !loadError && users.length > 0 && visibleUsers.length === 0 && <p className="rounded-xl border border-neutral-800 p-6 text-neutral-400">没有找到匹配账号，请换一个昵称或账号编号。</p>}
       <div className="space-y-5">
-        {users.map(user => (
+        {visibleUsers.map(user => (
           <article key={user.id} className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900">
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 px-5 py-4">
               <div className="flex min-w-0 flex-wrap items-center gap-3">
-                <h2 className="break-all font-semibold text-white">{user.username}</h2>
+                <h2 className="break-all font-semibold text-white">{userName(user)}</h2>
+                <span className="text-sm text-indigo-300">账号 #{user.id}</span>
                 <span className={`rounded-md px-2 py-1 text-xs ${user.is_admin ? 'bg-indigo-500/20 text-indigo-300' : 'bg-neutral-800 text-neutral-300'}`}>{user.is_admin ? '管理员' : user.role}</span>
               </div>
               <p className="text-xs text-neutral-500">注册于 {new Date(user.created_at).toLocaleDateString('zh-CN')}</p>
             </header>
+            <div className="space-y-2 border-b border-neutral-800 px-5 py-3">
+              <p className="break-all text-xs text-neutral-500">登录标识：{user.username}</p>
+              {user.learner_names?.length > 0 && <p className="text-sm text-neutral-300">英语学习档案：{user.learner_names.join('、')}</p>}
+              <UserLabel key={`${user.id}:${user.admin_label}`} user={user} disabled={editDisabled} onSave={saveLabel} />
+            </div>
             <div className="grid gap-4 p-5 xl:grid-cols-2">
               {user.apps.map(app => {
-                const managed = app.quota_managed && app.app_id !== 'seth-english';
+                const managed = app.quota_managed;
                 return (
                   <div key={app.app_id} className="rounded-xl border border-neutral-800 bg-neutral-950 p-4">
                     <h3 className="break-all text-sm font-medium text-white">{app.app_id === 'seth-english' ? '小C英语 · seth-english' : app.app_id}</h3>
@@ -239,7 +286,7 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
                     ) : (
                       <div className="mt-4 space-y-2">
                         <p className="text-sm text-neutral-300">原有剩余额度：<span className="font-semibold text-indigo-300">{app.quota}</span></p>
-                        <p className="text-xs leading-5 text-amber-200/80">{app.app_id === 'seth-english' ? '本次保留小C英语现有额度逻辑，暂不接入每日配置管理。' : '该应用暂未接入每日配置管理。'} 此处仅供查看。</p>
+                        <p className="text-xs leading-5 text-amber-200/80">该应用暂未接入每日配置管理，此处仅供查看。</p>
                       </div>
                     )}
                   </div>

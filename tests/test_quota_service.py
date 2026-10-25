@@ -42,11 +42,11 @@ class QuotaTests(unittest.TestCase):
                 INSERT INTO users VALUES(1,'root',0,'parent','2026-01-01'),
                     (2,'test-user',0,'parent','2026-01-01'),(3,'test-admin',1,'parent','2026-01-01');
                 CREATE TABLE user_app_permissions(user_id INTEGER,app_id TEXT,ai_credits_balance INTEGER,last_reset_date TEXT);
+                CREATE TABLE english_quota_ledger(id INTEGER PRIMARY KEY,central_user_id INTEGER,app_id TEXT,request_id TEXT,state TEXT,reset_date TEXT,expires_at INTEGER,closed_at INTEGER);
             """)
             db.executemany(
                 "INSERT INTO user_app_permissions VALUES(?,?,?,?)",
-                [(2, app_id, 0, "2026-10-22") for app_id in DEFAULTS]
-                + [(2, "seth-english", 3, "2026-10-21")],
+                [(2, app_id, 0, "2026-10-22") for app_id in DEFAULTS],
             )
         self.store = QuotaStore(self.path, lambda: self.now)
         self.store.initialize()
@@ -82,15 +82,15 @@ class QuotaTests(unittest.TestCase):
         with closing(sqlite3.connect(self.path)) as db, db:
             return db.execute(sql, args).fetchall()
 
-    def test_defaults_and_english_are_separate(self):
+    def test_defaults_include_english(self):
         for app_id, default in DEFAULTS.items():
             with self.subTest(app=app_id):
                 view = self.balance(app_id)
                 self.assertEqual((view["quota"], view["daily_quota"]), (default, default))
                 self.assertIsNone(view["daily_quota_override"])
         english = self.balance("seth-english")
-        self.assertFalse(english["quota_managed"])
-        self.assertEqual((english["quota"], english["quota_reset_date"]), (3, "2026-10-21"))
+        self.assertTrue(english["quota_managed"])
+        self.assertEqual((english["quota"], english["quota_reset_date"]), (5, self.today))
 
     def test_daily_setting_preserves_today_and_survives_next_day_for_all_products(self):
         for app_id in DEFAULTS:
@@ -213,12 +213,39 @@ class QuotaTests(unittest.TestCase):
         self.store.consume(self.user, "baby-profile", 1)
         self.assertEqual(before, self.query("SELECT * FROM user_app_permissions WHERE app_id!='baby-profile'"))
 
-    def test_english_management_is_rejected_without_writes(self):
-        before = self.query("SELECT * FROM user_app_permissions WHERE app_id='seth-english'")
+    def test_english_management_supports_daily_and_remaining(self):
         for action, payload in [("daily", {"daily_quota": 100}), ("remaining", {"quota": 100})]:
             response = self.client.post(f"/admin/quotas/users/2/apps/seth-english/{action}", json=payload, headers=self.headers)
-            self.assertEqual(response.status_code, 409)
-        self.assertEqual(before, self.query("SELECT * FROM user_app_permissions WHERE app_id='seth-english'"))
+            self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.balance("seth-english")["quota"], 100)
+
+    def test_english_expiry_refunds_once_and_never_refunds_yesterday(self):
+        self.update("seth-english", "remaining", 2)
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.executemany("INSERT INTO english_quota_ledger VALUES(?,2,'seth-english',?,'reserved',?,?,NULL)",
+                           [(1, 'today', self.today, self.now - 1), (2, 'old', '2026-10-22', self.now - 1)])
+        self.assertEqual(self.balance("seth-english")["quota"], 3)
+        self.assertEqual(self.balance("seth-english")["quota"], 3)
+        self.update("seth-english", "remaining", 20)
+        self.assertEqual(self.balance("seth-english")["quota"], 20)
+
+    def test_labels_require_admin_and_never_change_login_or_quota(self):
+        path = '/admin/quotas/users/2/label'
+        before = self.query('SELECT * FROM user_app_permissions')
+        self.assertEqual(self.client.post(path, json={'label': '小明妈妈'}, headers={'Authorization': 'Bearer user'}).status_code, 403)
+        self.assertEqual(self.client.post(path, json={'label': '小明妈妈'}, headers=self.headers).status_code, 200)
+        self.assertEqual(self.query('SELECT username FROM users WHERE id=2')[0][0], 'test-user')
+        self.assertEqual(before, self.query('SELECT * FROM user_app_permissions'))
+        self.assertEqual(self.client.post(path, json={'label': 'x\ny'}, headers=self.headers).status_code, 422)
+        self.assertEqual(self.client.post(path, json={'label': ''}, headers=self.headers).status_code, 200)
+
+    def test_names_are_only_returned_after_admin_check(self):
+        calls = []
+        self.store.names = lambda: calls.append(True) or {2: ['Alex']}
+        self.assertEqual(self.client.get('/admin/quotas/users', headers={'Authorization': 'Bearer user'}).status_code, 403)
+        self.assertEqual(calls, [])
+        users = self.client.get('/admin/quotas/users', headers=self.headers).json()
+        self.assertEqual(next(u for u in users if u['id'] == 2)['learner_names'], ['Alex'])
 
     def test_admin_api_rejects_missing_expired_forged_or_revoked_identity(self):
         route = "/admin/quotas/users"
