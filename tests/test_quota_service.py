@@ -247,6 +247,24 @@ class QuotaTests(unittest.TestCase):
         users = self.client.get('/admin/quotas/users', headers=self.headers).json()
         self.assertEqual(next(u for u in users if u['id'] == 2)['learner_names'], ['Alex'])
 
+    def test_account_profiles_require_admin_and_are_separate_from_learner_names(self):
+        class Profiles:
+            def __init__(self): self.calls = 0
+            def __call__(self): return {2: ['小明']}
+            def account_profiles(self):
+                self.calls += 1
+                return {2: {'nickname': '小明妈妈', 'avatar': ''}}
+        source = Profiles()
+        self.store.names = source
+        response = self.client.get('/admin/quotas/users', headers={'Authorization': 'Bearer user'})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(source.calls, 0)
+        result = self.store.users(self.admin)
+        user = next(u for u in result if u['id'] == 2)
+        self.assertEqual(user['learner_names'], ['小明'])
+        self.assertEqual(user['account_profile'], {'nickname': '小明妈妈', 'avatar': ''})
+        self.assertEqual(user['username'], 'test-user')
+
     def test_admin_api_rejects_missing_expired_forged_or_revoked_identity(self):
         route = "/admin/quotas/users"
         self.assertEqual(self.client.get(route).status_code, 401)

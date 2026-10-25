@@ -247,6 +247,7 @@ class QuotaStore:
         with self.transaction() as (db, instant):
             self.actor(db, claims, instant, admin=True)
             names = self.names()
+            profiles = getattr(self.names, "account_profiles", lambda: {})()
             result = []
             for user in db.execute("SELECT id,username,role,is_admin,created_at FROM users ORDER BY id"):
                 apps = []
@@ -261,7 +262,8 @@ class QuotaStore:
                 label = db.execute("SELECT label FROM admin_user_labels WHERE user_id=?", (user["id"],)).fetchone()
                 result.append({**dict(user), "is_admin": bool(user["is_admin"]), "apps": apps,
                                "admin_label": label[0] if label else "",
-                               "learner_names": names.get(user["id"], [])})
+                               "learner_names": names.get(user["id"], []),
+                               "account_profile": profiles.get(user["id"], {"nickname": "", "avatar": ""})})
             return result
 
     def label(self, claims, user_id, label):

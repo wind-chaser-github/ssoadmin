@@ -22,9 +22,10 @@ type QuotaUser = {
   apps: AppQuota[];
   admin_label: string;
   learner_names: string[];
+  account_profile?: { nickname: string; avatar: string };
 };
 
-const userName = (user: QuotaUser) => user.admin_label || user.learner_names?.join('、') || (user.username.startsWith('wx_') ? `微信用户 #${user.id}` : user.username);
+const userName = (user: QuotaUser) => user.admin_label || user.account_profile?.nickname || user.learner_names?.join('、') || (user.username.startsWith('wx_') ? '未填写昵称' : user.username);
 
 function UserLabel({ user, disabled, onSave }: { user: QuotaUser; disabled: boolean; onSave: (user: QuotaUser, label: string) => Promise<void> }) {
   const [label, setLabel] = useState(user.admin_label || '');
@@ -215,7 +216,7 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
     } finally { mutationPending.current = false; setSaving(false); }
   };
   const needle = query.trim().toLocaleLowerCase();
-  const visibleUsers = users.filter(user => [String(user.id), `#${user.id}`, user.username, user.admin_label, ...(user.learner_names || [])].join(' ').toLocaleLowerCase().includes(needle));
+  const visibleUsers = users.filter(user => [String(user.id), `#${user.id}`, user.username, user.admin_label, user.account_profile?.nickname, ...(user.learner_names || [])].join(' ').toLocaleLowerCase().includes(needle));
   const editButtonClass = 'rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-200 transition-colors hover:border-indigo-400 hover:text-white disabled:cursor-not-allowed disabled:opacity-40';
 
   return (
@@ -237,8 +238,8 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
       {loading && users.length === 0 && <p role="status" className="text-sm text-neutral-400">正在读取用户和额度…</p>}
       <div className="space-y-2">
         <label htmlFor="user-search" className="block text-sm text-neutral-300">查找用户</label>
-        <input id="user-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="输入孩子昵称、管理备注、账号编号或登录名" className="w-full rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-3 text-white" />
-        <p className="text-xs text-neutral-500">显示 {visibleUsers.length} / {users.length} 个账号。昵称来自英语孩子档案；同名用户请核对账号编号，额度按登录账号分别计算。</p>
+        <input id="user-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="输入账号昵称、孩子小名、管理备注或账号编号" className="w-full rounded-xl border border-neutral-700 bg-neutral-900 px-4 py-3 text-white" />
+        <p className="text-xs text-neutral-500">显示 {visibleUsers.length} / {users.length} 个账号。账号昵称和孩子档案分别显示；同名用户请核对账号编号，额度按登录账号分别计算。</p>
       </div>
       {!loading && !loadError && users.length === 0 && <p className="rounded-xl border border-neutral-800 p-6 text-neutral-400">暂无用户。</p>}
       {!loading && !loadError && users.length > 0 && visibleUsers.length === 0 && <p className="rounded-xl border border-neutral-800 p-6 text-neutral-400">没有找到匹配账号，请换一个昵称或账号编号。</p>}
@@ -247,14 +248,19 @@ export default function UsersView({ api }: { api: AxiosInstance }) {
           <article key={user.id} className="overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900">
             <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 px-5 py-4">
               <div className="flex min-w-0 flex-wrap items-center gap-3">
-                <h2 className="break-all font-semibold text-white">{userName(user)}</h2>
+                <div className="flex items-center gap-3">
+                  {user.account_profile?.avatar && <img className="h-11 w-11 shrink-0 rounded-full object-cover" src={user.account_profile.avatar} alt="" />}
+                  <h2 className="break-all font-semibold text-white">{userName(user)}</h2>
+                </div>
                 <span className="text-sm text-indigo-300">账号 #{user.id}</span>
                 <span className={`rounded-md px-2 py-1 text-xs ${user.is_admin ? 'bg-indigo-500/20 text-indigo-300' : 'bg-neutral-800 text-neutral-300'}`}>{user.is_admin ? '管理员' : user.role}</span>
               </div>
               <p className="text-xs text-neutral-500">注册于 {new Date(user.created_at).toLocaleDateString('zh-CN')}</p>
             </header>
             <div className="space-y-2 border-b border-neutral-800 px-5 py-3">
-              <p className="break-all text-xs text-neutral-500">登录标识：{user.username}</p>
+              {user.account_profile?.nickname && <p className="text-sm text-neutral-300">账号昵称：{user.account_profile.nickname}</p>}
+              {user.username.startsWith('wx_') && !user.account_profile?.nickname && <p className="text-sm text-amber-200/80">尚未填写账号昵称，请用户在小程序首页或“我的”中设置昵称与头像。</p>}
+              <details className="text-xs text-neutral-500"><summary className="cursor-pointer">登录标识</summary><p className="mt-2 break-all">{user.username}</p></details>
               {user.learner_names?.length > 0 && <p className="text-sm text-neutral-300">英语学习档案：{user.learner_names.join('、')}</p>}
               <UserLabel key={`${user.id}:${user.admin_label}`} user={user} disabled={editDisabled} onSave={saveLabel} />
             </div>
